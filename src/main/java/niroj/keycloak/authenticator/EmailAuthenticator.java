@@ -3,7 +3,7 @@ package niroj.keycloak.authenticator;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.AuthenticationFlowError;
 import org.keycloak.authentication.Authenticator;
-import org.keycloak.common.util.RandomString;
+import org.keycloak.common.util.SecretGenerator;
 import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.AuthenticatorConfigModel;
 import org.keycloak.models.KeycloakSession;
@@ -13,7 +13,11 @@ import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.theme.Theme;
 
 import javax.ws.rs.core.Response;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
+
+import org.jboss.logging.Logger;
 
 
 // email provider from keycloak
@@ -25,6 +29,7 @@ import org.keycloak.email.DefaultEmailSenderProvider;
 public class EmailAuthenticator implements Authenticator {
 
 	private static final String TPL_CODE = "login-email.ftl";
+	private static final Logger logger = Logger.getLogger(EmailAuthenticator.class);
 
 	@Override
 	public void authenticate(AuthenticationFlowContext context) {
@@ -32,10 +37,20 @@ public class EmailAuthenticator implements Authenticator {
 		KeycloakSession session = context.getSession();
 		UserModel user = context.getUser();
 
-		int length = Integer.parseInt(config.getConfig().get("length"));
-		int ttl = Integer.parseInt(config.getConfig().get("ttl"));
+		Map<String, String> configMap;;
+		if(config == null){
+			configMap = new HashMap<>();
+			configMap.put("length", EmailAuthenticatorFactory.CODE_LENGTH);
+			configMap.put("ttl", EmailAuthenticatorFactory.TIME_TO_LIVE);
+			configMap.put("simulation", EmailAuthenticatorFactory.SIMULATION_MODE);
+		} else {
+			configMap = config.getConfig();
+		}
 
-		String code = RandomString.randomCode(length);
+		int length = Integer.parseInt(configMap.get("length"));
+		int ttl = Integer.parseInt(configMap.get("ttl"));
+
+		String code = SecretGenerator.getInstance().randomString(length);
 		AuthenticationSessionModel authSession = context.getAuthenticationSession();
 		authSession.setAuthNote("code", code);
 		authSession.setAuthNote("ttl", Long.toString(System.currentTimeMillis() + (ttl * 1000L)));
@@ -46,15 +61,23 @@ public class EmailAuthenticator implements Authenticator {
 			String emailAuthText = theme.getMessages(locale).getProperty("emailAuthText");
 			String emailText = String.format(emailAuthText, code, Math.floorDiv(ttl, 60));
 
-			DefaultEmailSenderProvider senderProvider = new DefaultEmailSenderProvider(session);
-			senderProvider.send(
-				        session.getContext().getRealm().getSmtpConfig(),
-				        user,
-				        "2FA Authentication",
-				        emailText,
-				        emailText
+			boolean simulateEmail = Boolean.parseBoolean(configMap.get("simulation"));
+			if(simulateEmail){
+				logger.warn(String.format(
+						"***** SIMULATION MODE ***** Would send email to %s with content: %s",
+						user.getEmail(),
+						emailText
+				));
+			} else {
+				DefaultEmailSenderProvider senderProvider = new DefaultEmailSenderProvider(session);
+				senderProvider.send(
+					session.getContext().getRealm().getSmtpConfig(),
+					user,
+					"2FA Authentication",
+					emailText,
+					emailText
 				);
-
+			}
 
 			context.challenge(context.form().setAttribute("realm", context.getRealm()).createForm(TPL_CODE));
 		} catch (Exception e) {
